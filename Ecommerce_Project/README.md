@@ -1,58 +1,58 @@
-# Retail E-Commerce Medallion Pipeline
+# Retail Data Pipeline — Medallion Architecture on Databricks
 
-An end-to-end data pipeline built on Databricks that processes raw retail e-commerce data through a Bronze → Silver → Gold Medallion Architecture, producing clean, analysis-ready datasets for downstream reporting and analytics.
+An end-to-end ETL pipeline built on the [Online Retail II dataset](https://archive.ics.uci.edu/dataset/502/online+retail+ii) (~1M+ transactions, UK-based online retailer, 2009–2011), implementing **Medallion Architecture (Bronze → Silver → Gold)** using PySpark and Delta Lake on Databricks — the same core pattern used in production retail media pipelines.
 
-## Problem statement
-Raw retail transaction data arrives from [source — e.g. POS systems / CSV drops / API feeds] in an inconsistent, unvalidated state — missing fields, schema drift across batches, and duplicate records. This pipeline ingests that raw data and progressively refines it into trustworthy, query-ready tables that a BI team or analyst can rely on without doing their own cleanup.
+## Why this project
+
+I work daily with PySpark, Delta Lake, and Medallion Architecture in my current role, building pipelines for retail media data across 20+ global accounts. I wanted a public, self-contained version of the same patterns — one I could break, rebuild, and document properly outside the constraints of a live production system.
 
 ## Architecture
 
 ```
-Raw Source Files
-      │
-      ▼
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   BRONZE    │────▶│   SILVER    │────▶│    GOLD     │
-│ Raw ingest  │     │  Cleaned &  │     │  Aggregated │
-│ (as-is)     │     │  validated  │     │  business   │
-│             │     │             │     │  tables     │
-└─────────────┘     └─────────────┘     └─────────────┘
-   Delta Lake          Delta Lake          Delta Lake
-   (Volumes)          (DQ checks,         (star schema /
-                      schema evolution)    reporting-ready)
+Raw Excel Files (2 sheets: 2009-2010, 2010-2011)
+        │
+        ▼
+   BRONZE LAYER   — raw ingestion, combined + metadata tagged
+        │
+        ▼
+   SILVER LAYER    — cleaned, standardized, split into
+                     transactions vs. adjustments, DQ checked
+        │
+        ▼
+   GOLD LAYER       — 4 analytics-ready tables
 ```
 
-**Bronze** — Raw data ingested as-is from source, using Databricks Volumes for structured file landing. No transformation; preserves full fidelity and history of source data.
+### Bronze — Raw Ingestion
+- Ingested both sheets of the raw Excel source and combined them into a single dataset
+- Cast mixed-type columns (Invoice, StockCode, Description) to consistent string types for Spark compatibility
+- Tagged each record with `source_sheet`, `ingestion_timestamp`, and `_source_file` for traceability
+- Wrote to Delta as `raw_retail_online`
 
-**Silver** — Cleaned and validated data. Applies schema evolution handling so the pipeline doesn't break when source schemas shift, and enforces data quality rules (null checks, type validation, dedup) — records failing these checks are quarantined rather than silently dropped.
+### Silver — Cleaning & Standardization
+- Standardized text fields (trimmed, uppercased) and removed duplicate records
+- **Split real product transactions from non-product adjustment codes** (postage, bank charges, Amazon fees, manual adjustments) into two separate tables — `silver_transactions` and `silver_adjustments` — instead of treating all rows as sales
+- Derived fields: `total_price` (quantity × price), `iscancelled` (invoice-prefix based), `guestcheckout` (null customer ID)
+- Renamed columns to consistent snake_case for downstream use
+- **Data quality check:** validated no unexpected negative-quantity rows outside of cancelled orders, and reconciled Silver row counts against Bronze
 
-**Gold** — Business-level aggregated tables (e.g. daily sales by category, customer lifetime value, inventory turnover) — modeled for direct consumption by BI tools/analysts.
+### Gold — Analytics-Ready Tables
+| Table | Purpose |
+|---|---|
+| `gold_monthly_revenue_by_country` | Net revenue, order counts, cancellation rate, and AOV by month and country |
+| `gold_top_products` | Products ranked by total revenue, quantity sold, and unique customers |
+| `gold_cancellation_summary` | Cancellation rate and cancelled value by product, country, and month |
+| `gold_customer_rfm` | Customer segmentation using **RFM analysis** (Recency, Frequency, Monetary) — quartile-scored and segmented into Champions, Loyal Customers, At Risk, and Lost |
 
-## Tech stack
-- **Processing:** PySpark, Apache Spark
-- **Storage/Format:** Delta Lake
-- **Platform:** Databricks (Volumes, Delta Live Tables)
-- **Language:** SQL, Python
+## Tech Stack
+- **PySpark** — distributed transformations across all layers
+- **Delta Lake** — ACID transactions, schema enforcement, versioned storage
+- **Databricks** — notebook execution and table management
+- **Pandas** — initial Excel parsing prior to Spark DataFrame conversion
 
-## Project structure
-```
-├── bronze/
-│   └── bronze_ingstion.py
-├── silver/
-│   ├── silver_transformations.py
-├── gold/
-│   └── gold_tables.py
-└── README.md
-```
+## Notes / Learnings
+- Splitting adjustment codes from real transactions early (at Silver) kept downstream Gold aggregations accurate — mixing them would have inflated "sales" figures with postage and fees
+- Data quality checks between layers (not just at the end) caught mismatches early, before they propagated into Gold tables
 
-## Sample data / scale
-- Records processed: [e.g. ~2M synthetic retail transactions]
-- Source format: [XLSX]
-
-## Future improvements
-- Add streaming ingestion (Structured Streaming / Kafka) for near-real-time updates
-- Introduce dbt for the Gold-layer transformation logic
-- Add data contracts between Bronze and Silver
-
-## Author
-Vishwas G — [LinkedIn](https://www.linkedin.com/in/vishwas-gangaraju-1169901b3/) · [Email](mailto:vishwasgangaraju09@gmail.com)
+## Coming Next
+- Orchestration with Airflow
+- dbt-based transformation layer as an alternative to notebook-based Silver/Gold logic
